@@ -8,7 +8,7 @@ def add_dataset_args(parser):
                         default=1, help="Histories")
     parser.add_argument("--samples", type=int,
                         required=False, default=1, help="Samples")
-    parser.add_argument("--H", type=int, required=False,
+    parser.add_argument("--H", type=int, required=False, nargs='+',
                         default=100, help="Context horizon")
     parser.add_argument("--dim", type=int, required=False,
                         default=10, help="Dimension")

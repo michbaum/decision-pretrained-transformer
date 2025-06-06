@@ -39,7 +39,7 @@ if __name__ == '__main__':
     n_envs = args['envs']
     n_hists = args['hists']
     n_samples = args['samples']
-    H = args['H']
+    H = args['H']  # Context size
     dim = args['dim']
     state_dim = dim
     action_dim = dim
@@ -54,7 +54,7 @@ if __name__ == '__main__':
     cov = args['cov']
     test_cov = args['test_cov']
     envname = args['env']
-    horizon = args['hor']
+    horizon = args['hor']  # Horizon used in the MDPs
     n_eval = args['n_eval']
     seed = args['seed']
     lin_d = args['lin_d']
@@ -71,29 +71,40 @@ if __name__ == '__main__':
     if test_cov < 0:
         test_cov = cov
     if horizon < 0:
-        horizon = H
+        horizon = H[0]
 
-    model_config = {
-        'shuffle': shuffle,
-        'lr': lr,
-        'dropout': dropout,
-        'n_embd': n_embd,
-        'n_layer': n_layer,
-        'n_head': n_head,
-        'n_envs': n_envs,
-        'n_hists': n_hists,
-        'n_samples': n_samples,
-        'horizon': horizon,
-        'dim': dim,
-        'seed': seed,
-    }
+    # (michbaum) Build a model config per model context size in H
+    model_configs = []
+    filenames = []
+    for h in H:
+        model_config = {
+            'shuffle': shuffle,
+            'lr': lr,
+            'dropout': dropout,
+            'n_embd': n_embd,
+            'n_layer': n_layer,
+            'n_head': n_head,
+            'n_envs': n_envs,
+            'n_hists': n_hists,
+            'n_samples': n_samples,
+            # 'horizon': horizon,
+            'horizon': h,
+            'dim': dim,
+            'seed': seed,
+        }
+        model_configs.append(model_config)
+
     if envname == 'bandit':
         state_dim = 1
-
-        model_config.update({'var': var, 'cov': cov})
-        filename = build_bandit_model_filename(envname, model_config)
+        
+        for mc in model_configs:
+            mc.update({'var': var, 'cov': cov})
+            # (michbaum) Build a filename per model config
+            filename = build_bandit_model_filename(envname, mc)
+            filenames.append(filename)
         bandit_type = 'uniform'
     elif envname == 'bandit_bernoulli':
+        # NOTE: (michbaum) Broken now, would need changes
         state_dim = 1
 
         model_config.update({'var': var, 'cov': cov})
@@ -102,14 +113,18 @@ if __name__ == '__main__':
     elif envname == 'linear_bandit':
         state_dim = 1
 
-        model_config.update({'lin_d': lin_d, 'var': var, 'cov': cov})
-        filename = build_linear_bandit_model_filename(envname, model_config)
+        for mc in model_configs:
+            mc.update({'lin_d': lin_d, 'var': var, 'cov': cov})
+            filename = build_linear_bandit_model_filename(envname, mc)
+            filenames.append(filename)
     elif envname.startswith('darkroom'):
         state_dim = 2
         action_dim = 5
-
-        filename = build_darkroom_model_filename(envname, model_config)
+        for mc in model_configs:
+            filename = build_darkroom_model_filename(envname, mc)
+            filenames.append(filename)
     elif envname == 'miniworld':
+        # NOTE: (michbaum) Broken now, would need changes
         state_dim = 2
         action_dim = 4
 
@@ -117,72 +132,83 @@ if __name__ == '__main__':
     else:
         raise NotImplementedError
 
-    config = {
-        'horizon': H,
-        'state_dim': state_dim,
-        'action_dim': action_dim,
-        'n_layer': n_layer,
-        'n_embd': n_embd,
-        'n_head': n_head,
-        'dropout': dropout,
-        'test': True,
-    }
+    models = []
+    configs = []
+    for h in H:
+        config = {
+            'horizon': h,
+            'state_dim': state_dim,
+            'action_dim': action_dim,
+            'n_layer': n_layer,
+            'n_embd': n_embd,
+            'n_head': n_head,
+            'dropout': dropout,
+            'test': True,
+        }
+        configs.append(config)
 
     # Load network from saved file.
     # By default, load the final file, otherwise load specified epoch.
     if envname == 'miniworld':
+        # NOTE: (michbaum) Broken now, would need changes
         config.update({'image_size': 25})
         model = ImageTransformer(config).to(device)
     else:
-        model = Transformer(config).to(device)
+        for config in configs:
+            model = Transformer(config).to(device)
+            models.append(model)
     
-    tmp_filename = filename
+    model_paths = []
+    # (michbaum) Build all the model_paths for multiple filenames
     if epoch < 0:
-        model_path = f'models/{tmp_filename}.pt'
+        for tmp_filename in filenames:
+            model_path = f'models/{tmp_filename}.pt'
+            model_paths.append(model_path)
     else:
-        model_path = f'models/{tmp_filename}_epoch{epoch}.pt'
-    
-    
+        for tmp_filename in filenames:
+            model_path = f'models/{tmp_filename}_epoch{epoch}.pt'
+            model_paths.append(model_path)
 
     
-    
-    checkpoint = torch.load(model_path)
-    model.load_state_dict(checkpoint)
-    model.eval()
+    # (michbaum) Load all the models
+    for model, model_path in zip(models, model_paths):
+        checkpoint = torch.load(model_path)
+        model.load_state_dict(checkpoint)
+        model.eval()
 
+    # TODO: (michbaum) Need to somehow change filename
     dataset_config = {
         'horizon': horizon,
         'dim': dim,
     }
+    ctx_sizes = "_".join([str(h) for h in H])
     if envname in ['bandit', 'bandit_bernoulli']:
         dataset_config.update({'var': var, 'cov': cov, 'type': 'uniform'})
         eval_filepath = build_bandit_data_filename(
             envname, n_eval, dataset_config, mode=2)
-        save_filename = f'{filename}_testcov{test_cov}_hor{horizon}.pkl'
+        save_filename = f'{filename}_testcov{test_cov}_hor{horizon}_context_sizes_{ctx_sizes}.pkl'
     elif envname in ['linear_bandit']:
         dataset_config.update({'lin_d': lin_d, 'var': var, 'cov': cov})
         eval_filepath = build_linear_bandit_data_filename(
             envname, n_eval, dataset_config, mode=2)
-        save_filename = f'{filename}_testcov{test_cov}_hor{horizon}.pkl'
+        save_filename = f'{filename}_testcov{test_cov}_hor{horizon}_context_sizes_{ctx_sizes}.pkl'
     elif envname in ['darkroom_heldout', 'darkroom_permuted']:
         dataset_config.update({'rollin_type': 'uniform'})
         eval_filepath = build_darkroom_data_filename(
             envname, n_eval, dataset_config, mode=2)
-        save_filename = f'{filename}_hor{horizon}.pkl'
+        save_filename = f'{filename}_hor{horizon}_context_sizes_{ctx_sizes}.pkl'
     elif envname == 'miniworld':
         dataset_config.update({'rollin_type': 'uniform'})        
         eval_filepath = build_miniworld_data_filename(
             envname, 0, n_eval, dataset_config, mode=2)
-        save_filename = f'{filename}_hor{horizon}.pkl'
+        save_filename = f'{filename}_hor{horizon}_context_sizes_{ctx_sizes}.pkl'
     else:
         raise ValueError(f'Environment {envname} not supported')
-
 
     with open(eval_filepath, 'rb') as f:
         eval_trajs = pickle.load(f)
 
     n_eval = min(n_eval, len(eval_trajs))
-
 
     evals_filename = f"evals_epoch{epoch}"
     if not os.path.exists(f'figs/{evals_filename}'):
@@ -198,24 +224,26 @@ if __name__ == '__main__':
     if envname == 'bandit' or envname == 'bandit_bernoulli':
         config = {
             'horizon': horizon,
+            'H': H,
             'var': var,
             'n_eval': n_eval,
             'bandit_type': bandit_type,
         }
-        eval_bandit.online(eval_trajs, model, **config)
+        eval_bandit.online(eval_trajs, models, **config)
         plt.savefig(f'figs/{evals_filename}/online/{save_filename}.png')
         plt.clf()
         plt.cla()
         plt.close()
 
-        eval_bandit.offline(eval_trajs, model, **config)
-        plt.savefig(f'figs/{evals_filename}/bar/{save_filename}_bar.png')
-        plt.clf()
+        # eval_bandit.offline(eval_trajs, models, **config)
+        # plt.savefig(f'figs/{evals_filename}/bar/{save_filename}_bar.png')
+        # plt.clf()
 
-        eval_bandit.offline_graph(eval_trajs, model, **config)
+        eval_bandit.offline_graph(eval_trajs, models, **config)
         plt.savefig(f'figs/{evals_filename}/graph/{save_filename}_graph.png')
         plt.clf()
-        
+
+    # TODO: (michbaum) Adapt
     elif envname == 'linear_bandit':
         config = {
             'horizon': horizon,
@@ -223,24 +251,22 @@ if __name__ == '__main__':
             'n_eval': n_eval,
         }
 
-        with open(eval_filepath, 'rb') as f:
-            eval_trajs = pickle.load(f)
+        # with open(eval_filepath, 'rb') as f:
+        #     eval_trajs = pickle.load(f)
 
-        eval_linear_bandit.online(eval_trajs, model, **config)
+        eval_linear_bandit.online(eval_trajs, models, **config)
         plt.savefig(f'figs/{evals_filename}/online/{save_filename}.png')
         plt.clf()
         plt.cla()
         plt.close()
 
-        eval_linear_bandit.offline(eval_trajs, model, **config)
+        eval_linear_bandit.offline(eval_trajs, models, **config)
         plt.savefig(f'figs/{evals_filename}/bar/{save_filename}_bar.png')
         plt.clf()
 
-        eval_linear_bandit.offline_graph(eval_trajs, model, **config)
+        eval_linear_bandit.offline_graph(eval_trajs, models, **config)
         plt.savefig(f'figs/{evals_filename}/graph/{save_filename}_graph.png')
         plt.clf()
-
-
 
     elif envname in ['darkroom_heldout', 'darkroom_permuted']:
         config = {
@@ -251,18 +277,19 @@ if __name__ == '__main__':
             'dim': dim,
             'permuted': True if envname == 'darkroom_permuted' else False,
         }
-        eval_darkroom.online(eval_trajs, model, **config)
+        eval_darkroom.online(eval_trajs, models, **config)
         plt.savefig(f'figs/{evals_filename}/online/{save_filename}.png')
         plt.clf()
 
-        del config['Heps']
-        del config['horizon']
-        config['n_eval'] = n_eval
-        eval_darkroom.offline(eval_trajs, model, **config)
-        plt.savefig(f'figs/{evals_filename}/bar/{save_filename}_bar.png')
-        plt.clf()
+        # del config['Heps']
+        # del config['horizon']
+        # config['n_eval'] = n_eval
+        # eval_darkroom.offline(eval_trajs, models, **config)
+        # plt.savefig(f'figs/{evals_filename}/bar/{save_filename}_bar.png')
+        # plt.clf()
 
     elif envname == 'miniworld':
+        # NOTE: (michbaum) Broken now
         from evals import eval_miniworld
         save_video = args['save_video']
         filename_prefix = f'videos/{save_filename}/{evals_filename}/'
